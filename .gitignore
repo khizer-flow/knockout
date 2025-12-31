@@ -1,0 +1,8 @@
+node_modules/
+user_data/
+chrome_bot_profile/
+dist/
+build/
+.env
+.DS_Store
+Thumbs.db

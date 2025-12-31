@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { width: 300px; padding: 10px; font-family: sans-serif; background: #222; color: #fff; }
+    h2 { color: #f53d2d; text-align: center; }
+    label { display: block; margin-top: 10px; font-size: 12px; }
+    input { width: 100%; padding: 5px; margin-top: 5px; background: #333; border: 1px solid #555; color: #fff; }
+    button { width: 100%; padding: 10px; margin-top: 15px; background: #f53d2d; color: white; border: none; cursor: pointer; font-weight: bold; }
+    button:hover { background: #d02a1b; }
+    .status { margin-top: 10px; font-size: 11px; color: #aaa; text-align: center; }
+    .toggle { display: flex; align-items: center; margin-top: 10px; }
+    .toggle input { width: auto; margin-right: 10px; }
+  </style>
+</head>
+<body>
+  <h2>Shopee Sniper 🎯</h2>
+  
+  <label>Variant Keyword (Optional)</label>
+  <input type="text" id="variantKeyword" placeholder="e.g. White, 3.5mm">
+  
+  <div class="toggle">
+    <input type="checkbox" id="autoBuy" checked>
+    <label for="autoBuy" style="margin-top:0">Enable Auto-Buy</label>
+  </div>
+
+  <button id="saveBtn">Save Settings</button>
+  <div class="status" id="status">State: Active</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

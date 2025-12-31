@@ -1,0 +1,30 @@
+{
+    "manifest_version": 3,
+    "name": "Shopee Sniper Bot",
+    "version": "1.0",
+    "description": "Automated buying tool for Shopee Flash Sales",
+    "permissions": [
+        "activeTab",
+        "storage",
+        "scripting"
+    ],
+    "host_permissions": [
+        "https://shopee.com.my/*",
+        "https://shopee.com/*"
+    ],
+    "action": {
+        "default_popup": "popup.html"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "https://shopee.com.my/*",
+                "https://shopee.com/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_end"
+        }
+    ]
+}

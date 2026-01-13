@@ -1,0 +1,14 @@
+
+
+1) .\launch_isolated_chrome.ps1
+
+Login first and then go to step 2
+
+
+
+2) npm run scan
+
+You will see product select product
+
+
+3)checkout

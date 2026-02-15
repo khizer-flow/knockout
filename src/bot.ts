@@ -1,4 +1,3 @@
-
 import { chromium } from 'playwright-extra';
 import { Page, BrowserContext } from 'playwright';
 import stealthPlugin from 'puppeteer-extra-plugin-stealth';
@@ -7,7 +6,6 @@ import fs from 'fs-extra';
 import dayjs from 'dayjs';
 
 // Activate Stealth Plugin
-// This is CRITICAL. It deletes the "I am a robot" flags from the browser.
 chromium.use(stealthPlugin());
 
 const TARGET_URL = process.argv[2];
@@ -46,25 +44,14 @@ async function startBot() {
 
     try {
         console.log('Connecting to Chrome...');
-        // Connect to the existing Chrome window
         browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
         context = browser.contexts()[0];
-
-        // Use the current active page or a new one
         page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
-
         console.log('>>> SUCCESS: Connected!');
 
-        // Listen to browser console logs
-        // page.on('console', msg => console.log('BROWSER LOG:', msg.text()));
-
-        // --- MANUAL STEALTH INJECTION (Force Override) ---
-        // This ensures the browser does NOT report itself as automation
         await context.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            // Mock Chrome runtime to look native
             (window as any).chrome = { runtime: {} };
-            // Mock permissions
             const originalQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (parameters) => (
                 parameters.name === 'notifications' ?
@@ -85,152 +72,156 @@ async function startBot() {
 
     const cleanTarget = TARGET_URL.split('?')[0].replace('https://', '').replace('http://', '').replace('www.', '');
 
-    // Polling loop to detect when ANY tab matches the product page
-    // This allows you to open a new tab if the first one errors out.
     let targetPage: Page | null = null;
-
     console.log(`\n[INFO] Monitoring ALL tabs for: ${cleanTarget}`);
-    console.log(`[TIP] If you see a "Traffic Error", allows mid-click or "Open in New Tab" on the product link!`);
 
     while (!targetPage) {
         const pages = context.pages();
         for (const p of pages) {
             const currentUrl = p.url();
             const cleanCurrent = currentUrl.split('?')[0].replace('https://', '').replace('http://', '').replace('www.', '');
-
             if (cleanCurrent.includes(cleanTarget)) {
                 targetPage = p;
                 console.log(`\n>>> MATCH FOUND in tab: ${currentUrl} <<<`);
                 break;
             }
         }
-
         if (targetPage) break;
         await new Promise(r => setTimeout(r, 500));
     }
 
-    // Switch active page reference to the one we found
     page = targetPage;
-    // Re-attach console listener to the NEW page if needed (though we evaluate on it directly)
-    // page.on('console', msg => console.log('BROWSER LOG:', msg.text()));
-
     console.log('\n>>> TARGET DETECTED! ATTACHING BOT... <<<');
 
-    // Wait for Sale Time (if set)
     if (SALE_TIME_STR) await waitForSaleTime(page, SALE_TIME_STR);
 
-    // ZERO-LATENCY INJECTION
-    // We execute logic INSIDE browser to click instantly
     let attempts = 0;
     while (attempts < 5) {
         try {
             attempts++;
             const result = await page.evaluate(async (data) => {
                 const { variantKeyword } = data;
-
                 console.log('--- BOT ACTIVE ---');
-                console.log('Searching for buttons...');
-
+                
                 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
-
                 const start = Date.now();
 
-                // Try for 3 minutes (extended for safety)
                 while (Date.now() - start < 180000) {
-
-                    // 0. CHECK FOR TRAFFIC ERROR (AUTO-HEAL)
+                    // 0. TRAFFIC ERROR CHECK
                     const bodyText = document.body.innerText;
-                    if (document.title.includes('Traffic Error') || bodyText.includes('Traffic Error') || bodyText.includes('halaman tidak dijumpai') || bodyText.includes('Page Not Found')) {
-                        console.log('>>> TRAFFIC ERROR DETECTED! Opening new tab to bypass... <<<');
+                    if (document.title.includes('Traffic') || bodyText.includes('Traffic Error') || bodyText.includes('Page Not Found')) {
+                        console.log('>>> TRAFFIC ERROR! Opening new tab... <<<');
                         window.open(window.location.href, '_blank');
-                        await sleep(5000); // Wait for new tab to open and bot to switch
+                        await sleep(5000);
                         return 'OPENED_NEW_TAB';
                     }
 
-                    // 0.5 CHECK IF WE ARE ALREADY AT CHECKOUT OR CART
-
                     const currentUrl = window.location.href;
+
+                    // ============================================================
+                    //  CHECKOUT LOGIC (UPDATED FOR 7-ELEVEN)
+                    // ============================================================
                     if (currentUrl.includes('/checkout')) {
                         console.log('>>> ARRIVED AT CHECKOUT! <<<');
 
-                        // 3. Click "Place Order" (Buat Pesanan)
-                        // This corresponds to the final step.
-                        const placeOrderBtns = Array.from(document.querySelectorAll('button')).filter(b =>
-                            b.innerText.toLowerCase().includes('place order') ||
-                            b.innerText.toLowerCase().includes('buat pesanan') ||
-                            b.innerText.toLowerCase().includes('pay now') ||
-                            (b.innerText.toLowerCase().includes('order') && b.innerText.toLowerCase().includes('place'))
-                        );
+                        // Define our target texts
+                        const mainCategoryText = "Cash Payment at Physical Stores";
+                        const subOptionText = "Cash Payment at 7-Eleven";
+
+                        // Get all potential elements
+                        const allElements = Array.from(document.querySelectorAll('div, button, span, label'));
+
+                        // Helper to find visible elements by text
+                        const findByText = (text: string) => allElements.find(el => {
+                            const htmlEl = el as HTMLElement;
+                            return htmlEl.innerText && 
+                                   htmlEl.innerText.trim() === text && 
+                                   htmlEl.offsetParent !== null; // Must be visible
+                        });
+
+                        // STEP 1: Look for the specific 7-Eleven button first
+                        const sevenElevenBtn = findByText(subOptionText);
+
+                        if (sevenElevenBtn) {
+                            // If found, click it!
+                            // We check if it's already "selected" roughly by checking classes, 
+                            // but clicking it again is usually safe and ensures it's active.
+                            console.log(`>>> FOUND 7-ELEVEN! CLICKING... <<<`);
+                            (sevenElevenBtn as HTMLElement).click();
+                            await sleep(500); // Wait for UI update
+                        } else {
+                            // STEP 2: If 7-Eleven is NOT visible, we need to open the main category
+                            const mainBtn = findByText(mainCategoryText);
+                            
+                            if (mainBtn) {
+                                console.log(`>>> OPENING MENU: ${mainCategoryText} <<<`);
+                                (mainBtn as HTMLElement).click();
+                                await sleep(1000); // Wait for the menu to slide down/open
+                                continue; // Restart loop to find 7-Eleven now that it's visible
+                            } else {
+                                console.log('>>> Warning: Could not find Payment Category buttons yet... <<<');
+                            }
+                        }
+
+                        // STEP 3: PLACE ORDER
+                        // Only try to place order if we successfully clicked the 7-Eleven button (or if it was already there)
+                        // But to be aggressive, we always check for the Place Order button just in case manual intervention happened.
+                        const placeOrderBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+                            const txt = b.innerText.toLowerCase();
+                            return txt.includes('place order') || txt.includes('buat pesanan') || txt.includes('pay now');
+                        });
 
                         if (placeOrderBtns.length > 0) {
                             const btn = placeOrderBtns.find(b => !b.disabled && (b as HTMLElement).offsetParent !== null);
+                            
+                            // Optimization: Check if 7-Eleven is actually selected before clicking?
+                            // For speed, we just try to click Place Order. If payment isn't selected, Shopee usually blocks it or shows an error, 
+                            // but the bot will just loop and try again.
                             if (btn) {
-                                // HIGH RISK ACTION: Check if address is valid and payment is ready?
-                                // We assume user has set defaults as per instructions.
                                 (btn as HTMLElement).click();
                                 console.log('>>> CLICKED PLACE ORDER! <<<');
-
-                                await sleep(5000); // Wait for processing
+                                await sleep(5000);
                                 return 'ORDER_PLACED';
-                            } else {
-                                console.log('Found Place Order button but it is disabled/hidden?');
-                            }
-                        } else {
-                            console.log('Waiting for Place Order button...');
-                        }
-
-                        await sleep(1000);
-                        continue; // Keep looping to ensure it clicks
-                    }
-                    if (currentUrl.includes('/cart')) {
-                        console.log('>>> DETECTED CART PAGE <<<');
-
-                        // 1. Select All (Optional but good safety)
-                        // Look for checkbox with aria-label="Select all" or similar
-                        // strict logic for cart only
-                        // We try to find the "Select All" checkbox or just the first checkbox which is likely the one.
-
-                        const checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"]'));
-                        if (checkboxes.length > 0) {
-                            const firstBox = checkboxes[0] as HTMLElement;
-                            // Check if already checked?
-                            // Simple check: most first checkboxes in cart list are "Select All" or "Select Shop"
-                            // Just click it if we haven't clicked it before? 
-                            if (!(firstBox as any).checked) {
-                                firstBox.click();
-                                console.log('>>> CLICKED CHECKBOX (Select All?) <<<');
-                                await sleep(500);
                             }
                         }
-
-                        // 2. Click Checkout
-                        const checkoutBtns = Array.from(document.querySelectorAll('button')).filter(b =>
-                            b.innerText.toLowerCase().includes('checkout') ||
-                            b.innerText.toLowerCase().includes('semak keluar') ||
-                            b.innerText.toLowerCase().includes('check out')
-                        );
-
-                        if (checkoutBtns.length > 0) {
-                            const btn = checkoutBtns.find(b => !b.disabled && (b as HTMLElement).offsetParent !== null);
-                            if (btn) {
-                                (btn as HTMLElement).click();
-                                console.log('>>> CLICKED CHECKOUT IN CART <<<');
-                                await sleep(2000);
-                            }
-                        }
-
-                        // STOP HERE - Do not run product variant logic on cart page
+                        
                         await sleep(1000);
                         continue;
                     }
 
-                    // 1. SELECT VARIANT
+                    // ============================================================
+                    //  CART PAGE LOGIC
+                    // ============================================================
+                    if (currentUrl.includes('/cart')) {
+                        console.log('>>> DETECTED CART PAGE <<<');
+                        const checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"]'));
+                        if (checkboxes.length > 0) {
+                            const firstBox = checkboxes[0] as HTMLElement;
+                            if (!(firstBox as any).checked) {
+                                firstBox.click();
+                                await sleep(500);
+                            }
+                        }
+                        const checkoutBtns = Array.from(document.querySelectorAll('button')).filter(b => 
+                            b.innerText.toLowerCase().includes('checkout') || b.innerText.toLowerCase().includes('semak keluar')
+                        );
+                        if (checkoutBtns.length > 0) {
+                            const btn = checkoutBtns.find(b => !b.disabled && (b as HTMLElement).offsetParent !== null);
+                            if (btn) {
+                                (btn as HTMLElement).click();
+                                await sleep(2000);
+                            }
+                        }
+                        await sleep(1000);
+                        continue;
+                    }
+
+                    // ============================================================
+                    //  PRODUCT PAGE LOGIC
+                    // ============================================================
+                    
+                    // 1. Variant Selection
                     let allVariants = Array.from(document.querySelectorAll('button.product-variation'));
-
-                    // Strategy: Group by Parent (Row)
-                    // Shopee usually puts "Color" buttons in one div, and "Size" in another.
-                    // We must select ONE from EACH group.
-
                     const variantGroups = new Map<Element, Element[]>();
 
                     if (allVariants.length > 0) {
@@ -241,110 +232,45 @@ async function startBot() {
                                 variantGroups.get(parent)?.push(btn);
                             }
                         }
-                    } else {
-                        // Fallback Strategy B: Heuristic Generic Buttons
-                        const genericButtons = Array.from(document.querySelectorAll('button, div[role="button"], div[aria-label]'));
-                        const potential = genericButtons.filter(b => {
-                            const c = b.className.toLowerCase();
-                            const text = (b as HTMLElement).innerText.toLowerCase();
-                            // But first, exclude obvious garbage
-                            if (text.includes('skip') || text.includes('content') || text.includes('share') || text.length < 1) return false;
-                            // SAFETY: Exclude Delete/Remove buttons (Cart page protection)
-                            if (text.includes('delete') || text.includes('remove') || text.includes('hapus') || text.includes('buang') || c.includes('delete') || c.includes('remove')) return false;
-
-                            if (c.includes('btn-solid-primary') || c.includes('btn-tinted') || text.includes('buy') || text.includes('cart') || text.includes('beli')) return false;
-                            if (b.getAttribute('aria-disabled') === 'true' || c.includes('disabled')) return false;
-                            // Must be in a group of siblings? 
-                            return true;
-                        });
-
-                        // Try to group these too?
-                        for (const btn of potential) {
-                            const parent = btn.parentElement;
-                            if (parent && parent.children.length > 1) { // Only if it has siblings (implies a list of options)
-                                if (!variantGroups.has(parent)) variantGroups.set(parent, []);
-                                variantGroups.get(parent)?.push(btn);
-                            }
-                        }
                     }
 
-                    console.log(`Found ${variantGroups.size} variant groups/rows`);
-
                     for (const [parent, buttons] of variantGroups) {
-                        // Check if any in this group is already selected
-                        const isSelected = buttons.some(b =>
-                            b.className.includes('--selected') ||
-                            b.getAttribute('aria-selected') === 'true' ||
-                            b.classList.contains('selected')
-                        );
-
+                        const isSelected = buttons.some(b => b.className.includes('--selected') || b.getAttribute('aria-selected') === 'true');
                         if (!isSelected) {
-                            let target = buttons[0]; // Default to first available
-
-                            // Try keyword match
+                            let target = buttons[0]; 
                             if (variantKeyword) {
                                 const match = buttons.find(b => (b as HTMLElement).innerText.toLowerCase().includes(variantKeyword.toLowerCase()));
                                 if (match) target = match;
                             }
-
-                            // Ensure not disabled
-                            // If first is disabled, find next
                             if (target.className.includes('disabled') || target.getAttribute('aria-disabled') === 'true') {
-                                const nextAvailable = buttons.find(b => !b.className.includes('disabled') && b.getAttribute('aria-disabled') !== 'true');
-                                if (nextAvailable) target = nextAvailable;
+                                const next = buttons.find(b => !b.className.includes('disabled') && b.getAttribute('aria-disabled') !== 'true');
+                                if (next) target = next;
                             }
-
                             if (target) {
                                 (target as HTMLElement).click();
-                                console.log('Clicked variant option:', (target as HTMLElement).innerText);
-                                await sleep(200); // Brief wait between clicks
+                                await sleep(200);
                             }
                         }
                     }
 
-                    // 2. CLICK BUY BUTTON
+                    // 2. Click Buy Button
                     const buttons = Array.from(document.querySelectorAll('button'));
                     const buyBtn = buttons.find(b => {
                         const t = b.innerText.toLowerCase();
-                        // Check for various "Buy" texts
-                        return (t.includes('buy now') || t.includes('beli sekarang') || t.includes('buy with voucher') || t.includes('checkout')) &&
-                            // Minimal class check - sometimes they change classes but usually keep 'btn'
-                            (b.className.includes('btn-solid-primary') || b.className.includes('btn--l'));
+                        return (t.includes('buy now') || t.includes('beli sekarang')) && 
+                               (b.className.includes('btn-solid-primary') || b.className.includes('btn--l'));
                     });
 
-                    if (buyBtn) {
-                        console.log('Found Buy Button:', buyBtn.innerText);
-                    }
-
                     if (buyBtn && !buyBtn.disabled && (buyBtn as HTMLElement).offsetParent !== null) {
-                        // FORCE CLICK if enabled. Do not wait for our internal logic to confirm variant selection.
-                        // If Shopee says it's enabled, it's enabled.
-
                         (buyBtn as HTMLElement).click();
-                        console.log('>>> CLICKED BUY BUTTON - Waiting for navigation... <<<');
-
-                        // Don't result immediately. Wait a bit to ensure it actually goes through.
+                        console.log('>>> CLICKED BUY BUTTON <<<');
                         await sleep(2000);
-
-                        // If we are still here, we loop again and might click again if button is still there.
                         continue;
                     }
 
-                    // 3. CHECK FOR "VARIATION CONFIRMATION" DIALOG
-                    // Sometimes clicking "Buy" opens a popup to select variants again with a "Confirm" button.
-                    const confirmBtn = Array.from(document.querySelectorAll('button')).find(b =>
-                        b.innerText.toLowerCase().includes('confirm') &&
-                        (b.className.includes('btn-solid-primary') || b.className.includes('btn--l'))
-                    );
-
-                    if (confirmBtn && !confirmBtn.disabled && confirmBtn.offsetParent !== null) {
-                        console.log('>>> FOUND CONFIRMATION DIALOG! Clicking Confirm... <<<');
-
-                        // Check if we need to select a variant inside this dialog?
-                        // Usually the previous logic (Step 1) handles it because the dialog buttons are just more buttons in the DOM.
-                        // But we might need to be careful if the dialog hides the main page buttons.
-
-                        // Simple approach: If Confirm is there, click it.
+                    // 3. Confirm Dialog
+                    const confirmBtn = buttons.find(b => b.innerText.toLowerCase().includes('confirm') && b.className.includes('btn-solid-primary'));
+                    if (confirmBtn && !confirmBtn.disabled && (confirmBtn as HTMLElement).offsetParent !== null) {
                         (confirmBtn as HTMLElement).click();
                         await sleep(1000);
                     }
@@ -355,15 +281,13 @@ async function startBot() {
             }, { variantKeyword: VARIANT_KEYWORD });
 
             console.log(`Result: ${result}`);
-            break; // If successful, break retry loop
+            break; 
 
         } catch (e: any) {
-            console.error(`\n[Warn] Bot execution failed (Attempt ${attempts}/5): ${e.message}`);
-            if (e.message.includes('Execution context was destroyed') || e.message.includes('Session closed')) {
-                console.log('[Info] Page navigated/refreshed. Retrying injection in 2s...');
+            console.error(`\n[Warn] Bot execution failed: ${e.message}`);
+            if (e.message.includes('Execution context was destroyed')) {
                 await new Promise(r => setTimeout(r, 2000));
             } else {
-                // Fatal error
                 throw e;
             }
         }

@@ -1,146 +1,91 @@
-
 import { chromium } from 'playwright-extra';
 import stealthPlugin from 'puppeteer-extra-plugin-stealth';
-import inquirer from 'inquirer';
 import { spawn } from 'child_process';
-import path from 'path';
 
 chromium.use(stealthPlugin());
 
-const FLASH_SALE_URL = 'https://shopee.com.my/shocking_sale';
+// 1. UPDATE TARGET URL
+const FLASH_SALE_URL = 'https://shopee.com.my/m/cny-knockout-deals';
+const TARGET_KEYWORD = 'aukey gaming mouse pad'; // Lowercase for matching
 
 interface Product {
     name: string;
-    price: string;
     link: string;
-    discount?: string;
 }
 
 async function startScanner() {
-    console.log('\n--- SHOPEE FLASH SALE SCANNER ---\n');
+    console.log('\n--- SHOPEE SPECIFIC TARGET SCANNER ---\n');
+    console.log(`Target Page: ${FLASH_SALE_URL}`);
+    console.log(`Target Item: "${TARGET_KEYWORD}"`);
 
     let browser;
     try {
         browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
     } catch (e) {
-        console.error('Failed to connect to Chrome. Make sure to run `launch_isolated_chrome.ps1` first.');
+        console.error('Failed to connect to Chrome. Run `launch_isolated_chrome.ps1` first.');
         process.exit(1);
     }
 
     const context = browser.contexts()[0];
     const page = await context.newPage();
 
-    console.log(`Navigating to ${FLASH_SALE_URL}...`);
+    console.log(`Navigating...`);
     await page.goto(FLASH_SALE_URL, { waitUntil: 'domcontentloaded' });
 
-    console.log('Waiting for content to load...');
+    let foundLink: string | null = null;
 
-    // Retry loop for scraping
-    let items: Product[] = [];
-    for (let i = 0; i < 3; i++) {
-        await page.waitForTimeout(5000); // 5s wait
-
-        // Scrape items using generic heuristics
-        const currentItems: Product[] = await page.evaluate(() => {
-            const results: any[] = [];
-            // Detect all anchor tags that look like products (contain "RM" price)
+    // Retry loop
+    for (let i = 0; i < 20; i++) { // Increase retries for high-stakes drops
+        console.log(`[Attempt ${i + 1}] Scanning for keyword...`);
+        
+        // Custom evaluator for the specific keyword
+        foundLink = await page.evaluate((keyword) => {
             const anchors = Array.from(document.querySelectorAll('a'));
+            
+            // Find any link where the text or the href contains the keyword
+            const target = anchors.find(a => {
+                const text = a.innerText.toLowerCase();
+                const href = a.href.toLowerCase();
+                return text.includes(keyword) || href.includes(keyword.replace(' ', '-'));
+            });
 
-            for (const a of anchors) {
-                const text = a.innerText;
-                // Filter anchors that have a price-like structure
-                if (text.includes('RM') && (a.offsetHeight > 50)) {
+            return target ? target.href : null;
+        }, TARGET_KEYWORD);
 
-                    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-
-                    // Heuristics
-                    const priceMatch = lines.find(l => /^RM[\d\.]+/.test(l)) || lines.find(l => l.includes('RM'));
-                    // name is usually longest line
-                    const nameMatch = lines.sort((a, b) => b.length - a.length).find(l => !l.includes('RM') && !l.includes('%') && l.length > 5);
-
-                    if (priceMatch && nameMatch) {
-                        // avoid extremely long text which might be footer links
-                        if (nameMatch.length > 150) continue;
-                        if (results.find(r => r.link === a.href)) continue;
-
-                        results.push({
-                            name: nameMatch,
-                            price: priceMatch,
-                            link: a.href,
-                            discount: text.match(/-\d+%/)?.[0] || ''
-                        });
-                    }
-                }
-            }
-            return results;
-        });
-
-
-        items = currentItems;
-        if (items.length > 0) {
-            console.log(`Found ${items.length} items.\n`);
-            break; // Found items, stop retrying
-        } else {
-            console.log(`Attempt ${i + 1}: Found 0 items. Retrying...`);
-            // Check for traffic error / verification
-            const title = await page.title();
-            if (title.includes('Traffic') || title.includes('Login')) {
-                console.log('Detected Traffic Control or Login page. Please solve CAPTCHA in the browser window manually if visible.');
-                // Maybe wait longer?
-                await page.waitForTimeout(5000);
-            }
+        if (foundLink) {
+            console.log(`\n>>> FOUND TARGET: ${foundLink} <<<\n`);
+            break;
         }
+
+        // Wait before retry
+        await page.waitForTimeout(2000);
+        
+        // Optional: Scroll down to trigger lazy load if item is lower on page
+        await page.evaluate(() => window.scrollBy(0, 500));
     }
 
-    // Close the scanner page so it doesn't clutter
     await page.close();
 
-    if (items.length === 0) {
-        console.log('No items found after 3 attempts. Check selectors or if page is active.');
+    if (!foundLink) {
+        console.log('Target not found after retries.');
         process.exit(0);
     }
 
-    // Prompt user
-    const choices = items.map((item, index) => ({
-        name: `[${item.discount || ''}] ${item.name.substring(0, 50)}... (${item.price})`,
-        value: item.link
-    }));
+    // AUTO-LAUNCH BOT (No Inquirer prompt needed)
+    console.log('Launching Sniper Bot immediately...');
 
-    const answer = await inquirer.prompt([
-        {
-            type: 'rawlist',
-            name: 'selectedLink',
-            message: 'Select a product to snipe:',
-            choices: choices,
-            pageSize: 20
-        }
-    ]);
-
-    const targetUrl = answer.selectedLink;
-    console.log(`\nTarget Selected: ${targetUrl}`);
-
-    // Auto-open in browser for user convenience
-    try {
-        // ALWAYS open a new tab to avoid confusion/cluttering existing tabs
-        const openerPage = await context.newPage();
-        console.log('Opening product page automatically in NEW TAB...');
-        await openerPage.goto(targetUrl, { waitUntil: 'domcontentloaded' }).catch(() => { });
-    } catch (e) {
-        console.log('Could not auto-open page, please navigate manually.');
-    }
-
-    console.log('Launching Sniper Bot...');
+    // Open tab for user visual confirmation
+    const openerPage = await context.newPage();
+    openerPage.goto(foundLink).catch(() => {});
 
     // Spawn bot.ts
-    // npm start <url>
-    const botProcess = spawn('npm', ['start', targetUrl], {
+    const botProcess = spawn('npm', ['start', foundLink], {
         stdio: 'inherit',
         shell: true,
         cwd: process.cwd()
     });
 
     botProcess.on('close', (code) => {
-        console.log(`Sniper bot exited with code ${code}`);
         process.exit(code || 0);
     });
 }
